@@ -134,9 +134,12 @@ final class VolumeManager: NSObject, ObservableObject {
         if !volumes.isEmpty {
             let avg = max(0, min(1, volumes.reduce(0, +) / Float32(volumes.count)))
             DispatchQueue.main.async {
-                if self.rawVolume != avg {  
+                if self.rawVolume != avg {
                     if self.didInitialFetch {
                         self.lastChangeAt = Date()
+                        Task { @MainActor in
+                            BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .volume, value: CGFloat(avg))
+                        }
                     }
                 }
                 self.rawVolume = avg
@@ -161,7 +164,13 @@ final class VolumeManager: NSObject, ObservableObject {
                 {
                     let newMuted = muted != 0
                     DispatchQueue.main.async {
-                        if self.isMuted != newMuted { self.lastChangeAt = Date() }
+                        if self.isMuted != newMuted && self.didInitialFetch {
+                            self.lastChangeAt = Date()
+                            let v = newMuted ? Float32(0) : self.rawVolume
+                            Task { @MainActor in
+                                BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .volume, value: CGFloat(v))
+                            }
+                        }
                         self.isMuted = newMuted
                     }
                 }

@@ -14,8 +14,13 @@ final class BrightnessManager: ObservableObject {
 
 	private let visibleDuration: TimeInterval = 1.2
 	private let client = XPCHelperClient.shared
+	private var pollTask: Task<Void, Never>?
+	private var didInitialFetch = false
 
-	private init() { refresh() }
+	private init() {
+		refresh()
+		startPolling()
+	}
 
 	var shouldShowOverlay: Bool { Date().timeIntervalSince(lastChangeAt) < visibleDuration }
 
@@ -23,6 +28,30 @@ final class BrightnessManager: ObservableObject {
 		Task { @MainActor in
 			if let current = await client.currentScreenBrightness() {
 				publish(brightness: current, touchDate: false)
+				didInitialFetch = true
+			}
+		}
+	}
+
+	// Polls for brightness changes made from any source (System Settings, another app, etc.)
+	// since macOS provides no push notification for display brightness changes.
+	private func startPolling() {
+		pollTask?.cancel()
+		pollTask = Task { [weak self] in
+			while !Task.isCancelled {
+				try? await Task.sleep(for: .milliseconds(300))
+				guard let self, !Task.isCancelled else { return }
+				if let current = await self.client.currentScreenBrightness() {
+					await MainActor.run {
+						if self.didInitialFetch && abs(current - self.rawBrightness) > 0.001 {
+							self.publish(brightness: current, touchDate: true)
+							BoringViewCoordinator.shared.toggleSneakPeek(status: true, type: .brightness, value: CGFloat(current))
+						} else if !self.didInitialFetch {
+							self.publish(brightness: current, touchDate: false)
+							self.didInitialFetch = true
+						}
+					}
+				}
 			}
 		}
 	}
