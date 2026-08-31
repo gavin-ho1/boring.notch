@@ -21,7 +21,7 @@ This is a personal fork of [Boring Notch](https://github.com/TheBoredTeam/boring
 
 1. **Clone the repository**:
    ```bash
-   git clone <this-repo-url>
+   git clone https://github.com/gavin-ho1/boring.notch
    cd boring.notch
    ```
 
