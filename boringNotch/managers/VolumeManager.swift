@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import AudioToolbox
 import Combine
 import CoreAudio
 import Foundation
@@ -124,15 +125,30 @@ final class VolumeManager: NSObject, ObservableObject {
     private func fetchCurrentVolume() {
         let deviceID = systemOutputDeviceID()
         guard deviceID != kAudioObjectUnknown else { return }
-        var volumes: [Float32] = []
-        let candidateElements: [UInt32] = [kAudioObjectPropertyElementMain, 1, 2, 3, 4]
-        for element in candidateElements {
-            if let v = readValidatedScalar(deviceID: deviceID, element: element) {
-                volumes.append(v)
+
+        // Prefer the AudioHardwareService "virtual main volume" property: this is what
+        // AppleScript's "set volume", many Bluetooth/HDMI devices, and other external
+        // volume controllers (e.g. Aerospace-driven scripts) actually change. Devices
+        // without independent per-channel scalar support only expose this property, so
+        // relying solely on kAudioDevicePropertyVolumeScalar misses those changes entirely.
+        var resolvedVolume: Float32?
+        if let v = readVirtualMainVolume(deviceID: deviceID) {
+            resolvedVolume = v
+        } else {
+            var volumes: [Float32] = []
+            let candidateElements: [UInt32] = [kAudioObjectPropertyElementMain, 1, 2, 3, 4]
+            for element in candidateElements {
+                if let v = readValidatedScalar(deviceID: deviceID, element: element) {
+                    volumes.append(v)
+                }
+            }
+            if !volumes.isEmpty {
+                resolvedVolume = volumes.reduce(0, +) / Float32(volumes.count)
             }
         }
-        if !volumes.isEmpty {
-            let avg = max(0, min(1, volumes.reduce(0, +) / Float32(volumes.count)))
+
+        if let resolved = resolvedVolume {
+            let avg = max(0, min(1, resolved))
             DispatchQueue.main.async {
                 if self.rawVolume != avg {
                     if self.didInitialFetch {
@@ -191,6 +207,20 @@ final class VolumeManager: NSObject, ObservableObject {
             AudioObjectID(kAudioObjectSystemObject), &defaultDevAddr, nil
         ) { _, _ in
             self.fetchCurrentVolume()
+        }
+
+        // Listen for the AudioHardwareService virtual main volume property directly,
+        // since AppleScript's "set volume" and many external volume controllers change
+        // this instead of (or in addition to) the per-channel scalar below.
+        var virtualMainAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        if AudioHardwareServiceHasProperty(deviceID, &virtualMainAddr) {
+            AudioObjectAddPropertyListenerBlock(deviceID, &virtualMainAddr, nil) { _, _ in
+                self.fetchCurrentVolume()
+            }
         }
 
         var masterAddr = AudioObjectPropertyAddress(
@@ -335,6 +365,19 @@ final class VolumeManager: NSObject, ObservableObject {
             softwareMuted = true
             publish(volume: 0, muted: true, touchDate: true)
         }
+    }
+
+    private func readVirtualMainVolume(deviceID: AudioObjectID) -> Float32? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioHardwareServiceHasProperty(deviceID, &addr) else { return nil }
+        var vol = Float32(0)
+        var size = UInt32(MemoryLayout<Float32>.size)
+        let status = AudioHardwareServiceGetPropertyData(deviceID, &addr, 0, nil, &size, &vol)
+        return status == noErr ? vol : nil
     }
 
     private func readValidatedScalar(deviceID: AudioObjectID, element: UInt32) -> Float32? {
